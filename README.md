@@ -316,18 +316,18 @@ fields are included.
 CPython does not support native Tail-Call Optimization (TCO), meaning deeply nested documents or large sentence/paragraph counts would trigger a `RecursionError`. To overcome this, this project implements a **tail-call optimization (TCO)** mechanism:
 
 - A **tail-call recursive wrapper** is a programming pattern used to execute recursive functions in $O(1)$ stack space.
-- Instead of recursing directly (which pushes a new frame onto the call stack), the function returns a **thunk** (a deferred recursive step wrapped in a `TailCall` or `AsyncTailCall` object).
-- The **tail-call driver** (invoked via `@tail_call_optimized` or `@async_tail_call_optimized`) runs a flat `while` loop that repeatedly invokes the next thunk until a final non-thunk result is returned.
+- Instead of recursing directly (which pushes a new frame onto the call stack), the function returns a **deferred call** (a deferred recursive step wrapped in a `TailCall` or `AsyncTailCall` object).
+- The **tail-call driver** (invoked via `@tail_call_optimized` or `@async_tail_call_optimized`) runs a flat `while` loop that repeatedly invokes the next deferred call until a final non-deferred result is returned.
 
 ```python
 # Pattern used throughout the codebase
 def _foo_step(state, ...):
     if done:
         return result
-    # Return a deferred TailCall thunk instead of recursing directly
+    # Return a deferred TailCall step instead of recursing directly
     return TailCall(lambda: _foo_step(next_state, ...))
 
-foo = tail_call_optimized(_foo_step)  # Driver unrolls TailCall thunks in a flat while loop
+foo = tail_call_optimized(_foo_step)  # Driver unrolls TailCall deferred steps in a flat while loop
 ```
 
 | Function | File | TCO type |

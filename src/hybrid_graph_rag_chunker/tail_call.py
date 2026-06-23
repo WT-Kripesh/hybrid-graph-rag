@@ -22,7 +22,7 @@ iteration. Every recursive function built on top of it is still
 written as ordinary self-recursion.
 
 IMPORTANT — the self-recursion trap: a tail-call optimized function must call
-its own *undecorated* body from its `TailCall` thunks, never the
+its own *undecorated* body from its `TailCall` deferred calls, never the
 public, already-wrapped name. Calling the wrapped name would start a
 *new*, nested tail_call_optimized driver on every hop (adding a real stack
 frame each time) instead of being unwound by the *same* outer loop.
@@ -55,10 +55,10 @@ R = TypeVar("R")
 
 @dataclass(frozen=True)
 class TailCall:
-    """A deferred tail call: `thunk` is a zero-argument callable that
+    """A deferred tail call: `deferred_call` is a zero-argument callable that
     produces the next step -- another `TailCall`, or a final value."""
 
-    thunk: Callable[[], Any]
+    deferred_call: Callable[[], Any]
 
 
 def tail_call_optimized(step: Callable[..., Any]) -> Callable[..., Any]:
@@ -72,7 +72,7 @@ def tail_call_optimized(step: Callable[..., Any]) -> Callable[..., Any]:
     def driver(*args: Any, **kwargs: Any) -> Any:
         current = step(*args, **kwargs)
         while isinstance(current, TailCall):
-            current = current.thunk()
+            current = current.deferred_call()
         return current
 
     return driver
@@ -80,10 +80,10 @@ def tail_call_optimized(step: Callable[..., Any]) -> Callable[..., Any]:
 
 @dataclass(frozen=True)
 class AsyncTailCall:
-    """An asynchronous deferred tail call: `thunk` produces an awaitable
+    """An asynchronous deferred tail call: `deferred_call` produces an awaitable
     that resolves to the next step -- another `AsyncTailCall` or a final value."""
 
-    thunk: Callable[[], Awaitable[Any]]
+    deferred_call: Callable[[], Awaitable[Any]]
 
 
 def async_tail_call_optimized(
@@ -99,7 +99,7 @@ def async_tail_call_optimized(
     async def driver(*args: Any, **kwargs: Any) -> Any:
         current = await step(*args, **kwargs)
         while isinstance(current, AsyncTailCall):
-            current = await current.thunk()
+            current = await current.deferred_call()
         return current
 
     return driver
