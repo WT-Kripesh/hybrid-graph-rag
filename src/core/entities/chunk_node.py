@@ -1,23 +1,3 @@
-"""
-Data structures for the Hybrid Hierarchical + Graph-Augmented RAG schema.
-
-These mirror the Apache Solr schema defined in Section 4 of
-"hybrid_hierarchical_graph_rag_solr_implementation.pdf" (v3.0).
-
-Tail-call-optimized operations (via tail_call.depth_first_search):
-
-  ``flatten()`` — pre-order DFS over an arbitrary-depth ChunkNode tree,
-  producing one Solr document dict per node. A deeply nested document
-  (say, document → many chapter levels → many section levels → many
-  chunks) would exhaust Python's call stack with plain recursion.
-
-  ``walk()`` — same traversal as flatten but yields raw ChunkNodes;
-  used by ``count_by_type()``.
-
-Both delegate to ``tail_call.depth_first_search``, which reduces the tree to a flat
-list in O(1) Python call-stack frames via a work-list tail_call.
-"""
-
 from __future__ import annotations
 
 import uuid
@@ -27,7 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterator, Optional
 
-from .constants import (
+from core.constants.solr import (
     FIELD_CHILD_IDS,
     FIELD_CHUNK_GROUP_ID,
     FIELD_CHUNK_ORDER,
@@ -50,7 +30,7 @@ from .constants import (
     FIELD_TITLE,
     ISO_TIMESTAMP_FORMAT,
 )
-from .tail_call import depth_first_search
+from core.tail_call import depth_first_search
 
 
 class NodeType(str, Enum):
@@ -75,48 +55,36 @@ def _now_iso() -> str:
 
 @dataclass
 class ChunkNode:
-    # --- Identity & multi-tenancy (schema §4.1) ---
     node_type: NodeType
     title: str
     id: str = field(default_factory=_new_id)
     doc_id: str = ""
     organization: Optional[str] = None
 
-    # --- Graph structure ---
     parent_id: Optional[str] = None
     reference_ids: list[str] = field(default_factory=list)
     reference_count: int = 0
 
-    # --- Hierarchy ---
     section_path: str = ""
     level: int = 0
 
-    # --- Content ---
     content: str = ""
     summary: Optional[str] = None
     chunk_order: Optional[int] = None
 
-    # --- Embedding (DenseVectorField, 1024-dim, cosine — schema §4.1) ---
     embedding: Optional[list[float]] = None
 
-    # --- Semantic chunking metadata (§10.6) ---
     chunk_group_id: Optional[int] = None
     group_label: Optional[str] = None
     group_coherence_score: Optional[str] = None
 
-    # --- Timestamps ---
     created_at: str = field(default_factory=_now_iso)
 
-    # --- Document style flag (schema §4.1 `document_style`) ---
     document_style: DocumentStyle = DocumentStyle.STRUCTURED
 
-    # --- Recursive hierarchy (NOT a Solr field) ---
-    children: list["ChunkNode"] = field(default_factory=list, repr=False)
+    children: list[ChunkNode] = field(default_factory=list, repr=False)
 
-    # ------------------------------------------------------------------
-    # Tree-building helper (immutable)
-    # ------------------------------------------------------------------
-    def with_child(self, child: "ChunkNode") -> "ChunkNode":
+    def with_child(self, child: ChunkNode) -> ChunkNode:
         wired = replace(child, parent_id=self.id, doc_id=self.doc_id)
         return replace(self, children=[*self.children, wired])
 
@@ -124,9 +92,6 @@ class ChunkNode:
     def child_ids(self) -> list[str]:
         return [child.id for child in self.children]
 
-    # ------------------------------------------------------------------
-    # Schema projection
-    # ------------------------------------------------------------------
     def to_solr_doc(self) -> dict[str, Any]:
         required: dict[str, Any] = {
             FIELD_ID: self.id,
@@ -161,17 +126,12 @@ class ChunkNode:
             **{k: v for k, v in optional.items() if v is not None},
         }
 
-    # ------------------------------------------------------------------
-    # Tail-call optimized tree traversals (O(1) Python call-stack depth)
-    # ------------------------------------------------------------------
     def flatten(self) -> list[dict[str, Any]]:
-        """Pre-order DFS over the whole subtree, returning one Solr doc per node."""
         return depth_first_search(
             lambda n: n.children, lambda n: n.to_solr_doc()
         )([self], [])
 
-    def walk(self) -> Iterator["ChunkNode"]:
-        """Pre-order DFS iterator over this node and all descendants."""
+    def walk(self) -> Iterator[ChunkNode]:
         return iter(
             depth_first_search(lambda n: n.children, lambda n: n)([self], [])
         )

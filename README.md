@@ -31,6 +31,18 @@ hybrid-graph-rag-chunker/
 │   ├── semantic_chunker.py          # embedding-based, topic-boundary strategy
 │   ├── markdown_parser.py           # ATX-heading parser → MarkdownSection tree
 │   └── chunk_builder.py             # assembles everything → ChunkNode tree
+├── src/retrieval/
+│   ├── __init__.py                  # public API re-exports
+│   ├── solr_client.py               # thin httpx wrapper around Solr HTTP API
+│   ├── scorer.py                    # ScoredChunk dataclass, normalisation, S1/S2/FINAL
+│   ├── hybrid_retriever.py          # BM25 + vector hybrid retrieval fusion
+│   ├── hierarchy_expander.py        # parent/grandparent traversal via parent_id
+│   ├── reranker.py                  # final scoring + top-k ranking + provenance
+│   ├── context_builder.py           # ranked chunks → LLM context string
+│   ├── pipeline.py                  # RetrievalPipeline orchestrator
+│   ├── ingest.py                    # CLI: index chunked JSON into Solr
+│   ├── query.py                     # CLI: query the RAG pipeline
+│   └── solr_schema.json             # managed-schema fields for Solr Schema API
 └── tests/test_chunking.py
 ```
 

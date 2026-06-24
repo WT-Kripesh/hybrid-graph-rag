@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from hybrid_graph_rag_chunker.constants import FIELD_EMBEDDING
+from core.constants.solr import FIELD_EMBEDDING
 
 DEFAULT_SOLR_BASE = "http://localhost:8983"
 DEFAULT_COLLECTION = "hybrid_rag"

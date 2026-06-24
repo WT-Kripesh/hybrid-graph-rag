@@ -3,22 +3,8 @@ Console entrypoint.
 
 Runs the Markdown -> recursive hierarchy -> semantic chunking -> embedding
 pipeline against a bundled demo document, prints a tree summary of the
-resulting nodes, and writes the flat list of Solr-schema documents (PDF
-§4.1) to ``chunked_output.json``.
-
-Also runs the flat plain-text path (``chunk_plain_text``) against a
-heading-free prose document, printing a second tree and writing
-``chunked_output_flat.json`` (every entry has ``document_style: "flat"``).
-
-Tail-call-optimized tree render (via tail_call.depth_first_search):
-
-    ``_render_tree`` builds the indented tree summary as a flat list
-    of strings in pre-order DFS, using the shared ``depth_first_search`` combinator
-    so the renderer isn't bounded by Python's call-stack depth.
-    Instead of keeping an indent string per ``ChunkNode``, it passes
-    indent depth as a parallel value alongside each node via a
-    ``(node, depth)`` wrapper so ``depth_first_search``'s single ``transform``
-    argument can access it.
+resulting nodes, and writes the flat list of Solr-schema documents to
+``chunked_output.json``, etc.
 """
 
 from __future__ import annotations
@@ -28,11 +14,7 @@ import json
 import sys
 from dataclasses import dataclass
 
-from hybrid_graph_rag_chunker.chunk_builder import (
-    chunk_markdown,
-    chunk_plain_text,
-)
-from hybrid_graph_rag_chunker.constants import (
+from core.constants.chunker import (
     DEMO_DOC_TITLE,
     DEMO_ORGANIZATION,
     DEMO_PLAIN_DOC_TITLE,
@@ -48,10 +30,12 @@ from hybrid_graph_rag_chunker.constants import (
     SEPARATOR_WIDTH,
     TREE_INDENT_UNIT,
 )
-from hybrid_graph_rag_chunker.models import ChunkNode, DocumentStyle
-from hybrid_graph_rag_chunker.ai_client import EmbeddingClient, LLMClient
-from hybrid_graph_rag_chunker.fixed_size_chunker import FixedSizeChunker
-from hybrid_graph_rag_chunker.tail_call import depth_first_search
+from core.entities.chunk_node import ChunkNode, DocumentStyle
+from adapters.lm_studio.embedder import LMStudioEmbedder
+from adapters.lm_studio.llm import LMStudioLLM
+from chunker.tree_builder import chunk_markdown, chunk_plain_text
+from core.tail_call import depth_first_search
+from chunker.fixed_size import FixedSizeChunker
 
 DEMO_MARKDOWN = """\
 # Service Agreement Contract A
@@ -200,10 +184,6 @@ would be impossible to retrieve from a single chunk.
 
 @dataclass(frozen=True)
 class _DepthNode:
-    """Wraps a ChunkNode with its current indentation depth so the
-    ``depth_first_search`` transform can produce a correctly indented line per node
-    without external mutable state."""
-
     node: ChunkNode
     depth: int
 
@@ -239,11 +219,11 @@ def _write_json(path: str, data: object) -> None:
 
 
 async def main() -> int:
-    embedder = EmbeddingClient()
-    llm = LLMClient()
+    embedder = LMStudioEmbedder()
+    llm = LMStudioLLM()
 
     print("=" * SEPARATOR_WIDTH)
-    print("Hybrid Hierarchical + Graph-Augmented RAG — Markdown Chunker")
+    print("Hybrid Hierarchical + Graph-Augmented RAG \u2014 Markdown Chunker")
     print("=" * SEPARATOR_WIDTH)
     print(f"Embedding endpoint : {embedder.base_url}")
     print(f"Embedding model    : {embedder.model}")
@@ -252,17 +232,13 @@ async def main() -> int:
     print(f"LLM model          : {llm.model}")
     print()
 
-    # ── LLM Test Call ────────────────────────────────────────────────────
     print("Testing LLM generation...")
-    # NOTE: LM Studio must be running for this to work, and if it's not, it'll return None.
-    # We will print the result regardless.
     llm_response = await llm.generate(
         "Hello, are you there?", system_prompt="You are a helpful assistant."
     )
     print(f"LLM Response       : {llm_response}")
     print()
 
-    # ── Structured Markdown demo ─────────────────────────────────────────
     root = await chunk_markdown(
         DEMO_MARKDOWN,
         doc_title=DEMO_DOC_TITLE,
@@ -282,13 +258,10 @@ async def main() -> int:
     _write_json(OUTPUT_FILE_PATH, solr_docs)
 
     print(f"\nFull Solr-document payload written to ./{OUTPUT_FILE_PATH}")
-    print("(Each entry matches the field names/types from PDF schema §4.1 —")
-    print(" ready to POST to /solr/docs/update.)")
 
-    # ── Flat plain-text demo ─────────────────────────────────────────────
     print()
     print("-" * SEPARATOR_WIDTH)
-    print("Flat Plain-Text Demo (heading-free prose → document_style: 'flat')")
+    print("Flat Plain-Text Demo (heading-free prose \u2192 document_style: 'flat')")
     print("-" * SEPARATOR_WIDTH)
 
     flat_root = await chunk_plain_text(
@@ -319,7 +292,6 @@ async def main() -> int:
 
     print(f"\nFlat Solr-document payload written to ./{OUTPUT_FILE_PATH_FLAT}")
 
-    # ── Fixed-Size chunker demo (pluggable strategy) ──────────────────────────
     print()
     print("-" * SEPARATOR_WIDTH)
     print("Fixed-Size Chunker Demo (pluggable strategy, no embeddings needed)")
