@@ -1,41 +1,12 @@
-"""
-Semantic chunking strategy (PDF §10) — splits a block of leaf-section
-text into at most ``MAX_CHUNKS_PER_DOC`` topic-coherent, dynamically
-sized chunks, sized for 8B-parameter locally hosted LLMs.
-
-Tail-call-optimized recursive functions (via tail_call.py):
-
-  * ``enforce_max_chunks`` — repeatedly merges the most-similar
-    adjacent pair until group count reaches the cap. Each call is a
-    self-tail-call on the smaller group list; on pathological input
-    (thousands of initial groups) a naive recursive version would
-    overflow the call stack.
-
-  * ``split_oversized_group`` — bisects an oversized group at its
-    weakest semantic boundary, recursing on each half. In the worst
-    case (monotone text with many sentences), splitting depth is
-    O(log S) where S = sentence count, which is safe; but for
-    explicitness and correctness at very large S we tail_call_optimized it
-    anyway. Because this recursion fans out (each call may produce two
-    recursive branches), a single tail_call_optimized driver can't unroll it
-    directly: instead it returns a pre-order accumulated list via a
-    tail-call optimized work-list (``_split_step``).
-
-  * ``validate_token_budgets`` delegates its undersized-group merge to
-    ``functools.reduce`` (the tail-recursive accumulate/merge loop it
-    replaced is now O(1) stack depth in reduce's C-level loop).
-"""
-
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from functools import reduce
 from typing import Any, Callable, Sequence
 
 import numpy as np
 
-from .constants import (
+from core.constants.chunker import (
     BLANK_CHAR,
     COSINE_EPSILON,
     FULL_COHERENCE,
@@ -53,12 +24,13 @@ from .constants import (
     SPACY_SENTENCIZER_PIPE,
     TOKENS_PER_WORD_RATIO,
 )
-from .ai_client import EmbeddingClient
-from .chunk_strategy import BaseChunker, TextChunk
-from .tail_call import TailCall, tail_call_optimized
+from core.entities.text_chunk import TextChunk
+from core.ports.chunker import BaseChunker
+from core.ports.embedder import Embedder
+from core.tail_call import TailCall, tail_call_optimized
 
 Vector = np.ndarray
-Group = dict  # {"sentences": list[str], "embeddings": list[Vector], "centroid": Vector}
+Group = dict
 
 _SENTENCE_BOUNDARY_RE = re.compile(SENTENCE_BOUNDARY_PATTERN)
 
@@ -75,7 +47,6 @@ def estimate_tokens(text: str) -> int:
     )
 
 
-# ── Step 1: Sentence Segmentation ──────────────────────────────────────
 def _segment_with_spacy(text: str) -> list[str]:
     import spacy  # type: ignore
 
@@ -95,7 +66,6 @@ def segment_sentences(text: str) -> list[str]:
         return _segment_with_regex(text)
 
 
-# ── Step 3: Boundary Detection ─────────────────────────────────────────
 def detect_boundaries(
     embeddings: Sequence[Vector], threshold: float = SIMILARITY_THRESHOLD
 ) -> list[int]:
@@ -106,7 +76,6 @@ def detect_boundaries(
     ]
 
 
-# ── Step 4: Form Initial Semantic Groups ───────────────────────────────
 def form_groups(
     sentences: list[str], embeddings: list[Vector], boundaries: list[int]
 ) -> list[Group]:
@@ -124,7 +93,6 @@ def form_groups(
     ]
 
 
-# ── Step 5: Dynamic Merging — tail-call optimized ──────────────────────
 def _merge_two(a: Group, b: Group) -> Group:
     combined = a[GROUP_KEY_EMBEDDINGS] + b[GROUP_KEY_EMBEDDINGS]
     return {
@@ -166,7 +134,6 @@ def _enforce_max_chunks_step(groups: list[Group], max_chunks: int) -> Any:
 enforce_max_chunks = tail_call_optimized(_enforce_max_chunks_step)
 
 
-# ── Step 6: Token-Budget Validation — tail-call optimized split ─────────
 def _split_at(group: Group, index: int) -> tuple[Group, Group]:
     left_embs, right_embs = (
         group[GROUP_KEY_EMBEDDINGS][:index],
@@ -201,14 +168,6 @@ def _weakest_boundary_index(embeddings: list[Vector]) -> int:
 def _split_step(
     pending: list[Group], done: list[Group], max_tokens: int
 ) -> Any:
-    """
-    Work-list tail-call optimized traversal: `pending` holds groups still to be
-    examined; `done` accumulates already-validated output. Because
-    splitting fans out (one group becomes two), a simple tail-recursive
-    "split then recurse on right" would still have linear depth on
-    pathological monotone text. The work-list keeps the Python call
-    stack O(1) regardless.
-    """
     if not pending:
         return done
     head, *rest = pending
@@ -279,9 +238,7 @@ def _group_to_chunk(group: Group) -> TextChunk:
     )
 
 
-def _single_sentence_chunk(
-    sentence: str, embedder: EmbeddingClient
-) -> TextChunk:
+def _single_sentence_chunk(sentence: str) -> TextChunk:
     return TextChunk(
         text=sentence,
         coherence_score=FULL_COHERENCE,
@@ -289,11 +246,6 @@ def _single_sentence_chunk(
 
 
 class SemanticChunker(BaseChunker):
-    """
-    A chunking strategy that semantically groups text units (sentences or paragraphs)
-    using embeddings and a similarity threshold.
-    """
-
     def __init__(
         self,
         split_fn: Callable[[str], list[str]] = segment_sentences,
@@ -309,13 +261,13 @@ class SemanticChunker(BaseChunker):
         self.min_tokens = min_tokens
 
     async def chunk(
-        self, text: str, embedder: EmbeddingClient
+        self, text: str, embedder: Embedder
     ) -> list[TextChunk]:
         units = self.split_fn(text)
         if not units:
             return []
         if len(units) == 1:
-            return [_single_sentence_chunk(units[0], embedder)]
+            return [_single_sentence_chunk(units[0])]
 
         raw_embeddings = await embedder.embed(units)
 

@@ -1,5 +1,5 @@
 [project]
-name = "hybrid-graph-rag-chunker"
+name = "chunker"
 version = "0.1.0"
 description = "Hierarchical + semantic Markdown chunker producing nodes for a Hybrid Hierarchical + Graph-Augmented RAG Solr schema"
 readme = "README.md"

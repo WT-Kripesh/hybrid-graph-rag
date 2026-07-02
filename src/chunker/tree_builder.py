@@ -1,36 +1,3 @@
-"""
-Builds the recursive Solr-schema ``ChunkNode`` tree (models.py) from a
-parsed Markdown outline (markdown_parser.py), running the semantic
-chunking algorithm (semantic_chunker.py) on each section's own text.
-
-Mapping to PDF §2.1 / §4.2:
-
-    MarkdownSection(level=0)      -> ChunkNode(node_type=DOCUMENT)
-    MarkdownSection(level=1..6)   -> ChunkNode(node_type=SECTION)
-    text directly under a heading -> one or more ChunkNode(node_type=CHUNK)
-
-Tail-call-optimized tree build (via tail_call.py):
-
-    ``_build_node`` converts a ``MarkdownSection`` subtree into a
-    ``ChunkNode`` subtree. The naive recursive formulation recurses
-    once per section in the document outline. A document with many
-    deeply nested headings would exhaust the call stack; we tail_call_optimized
-    the build via an explicit bottom-up work-list
-    (``_build_node_step``) that accumulates finished ``ChunkNode``
-    children before constructing their parent, keeping Python
-    call-stack depth O(1).
-
-Flat plain-text path (``chunk_plain_text``):
-
-    When the input has no ATX heading structure, ``chunk_plain_text``
-    splits the text at blank-line boundaries (``split_paragraphs``),
-    embeds each paragraph, and feeds them through the same semantic
-    grouping pipeline used for heading sections (boundary detection,
-    enforce_max_chunks, validate_token_budgets). The resulting
-    CHUNK leaf nodes are hung directly under a single DOCUMENT root,
-    and every node in the tree carries ``document_style="flat"``.
-"""
-
 from __future__ import annotations
 
 import re
@@ -38,7 +5,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from .constants import (
+from core.constants.chunker import (
     CHUNK_PATH_PREFIX,
     DEFAULT_SLUG,
     DEFAULT_UNTITLED_DOCUMENT_TITLE,
@@ -48,16 +15,14 @@ from .constants import (
     SLUG_PATTERN,
     SLUG_SEPARATOR,
 )
-from .ai_client import EmbeddingClient
-from .markdown_parser import (
-    MarkdownSection,
-    parse_markdown_outline,
-    split_paragraphs,
-)
-from .models import ChunkNode, DocumentStyle, NodeType
-from .semantic_chunker import SemanticChunker, segment_sentences
-from .chunk_strategy import BaseChunker
-from .tail_call import AsyncTailCall, async_tail_call_optimized
+from core.entities.chunk_node import ChunkNode, DocumentStyle, NodeType
+from core.entities.document import MarkdownSection
+
+from core.ports.embedder import Embedder
+from core.ports.chunker import BaseChunker
+from chunker.semantic_splitter import SemanticChunker, segment_sentences
+from chunker.markdown_parser import parse_markdown_outline, split_paragraphs
+from core.tail_call import AsyncTailCall, async_tail_call_optimized
 
 _SLUG_RE = re.compile(SLUG_PATTERN)
 
@@ -82,13 +47,12 @@ def _chunk_title(title: str, i: int, multi: bool) -> str:
 
 
 def _fmt_coherence_score(score: float | None) -> str | None:
-    """Format a coherence score as a 2-decimal string, or return None."""
     return f"{score:.2f}" if score is not None else None
 
 
 async def _build_chunks(
     section: MarkdownSection,
-    embedder: EmbeddingClient,
+    embedder: Embedder,
     doc_id: str,
     section_path: str,
     parent_id: str,
@@ -96,15 +60,6 @@ async def _build_chunks(
     strategy: BaseChunker,
     document_style: DocumentStyle = DocumentStyle.STRUCTURED,
 ) -> list[ChunkNode]:
-    """Chunk `section`'s own text into leaf ChunkNode(s) using the provided strategy.
-
-    Parameters
-    ----------
-    document_style:
-        Passed through to every ``ChunkNode`` produced.  Use
-        ``DocumentStyle.FLAT`` for the heading-free plain-text path so that
-        every output node is correctly tagged; defaults to ``STRUCTURED``.
-    """
     if not section.content.strip():
         return []
     text_chunks = await strategy.chunk(section.content, embedder)
@@ -136,19 +91,6 @@ async def _build_chunks(
     ]
 
 
-# ── Work-list frame used during bottom-up build ─────────────────────────
-# Each pending entry is one of:
-#   ("section", MarkdownSection, section_path, parent_id, doc_id, org) — not yet converted
-#   ("node",    ChunkNode)                                               — already converted
-#
-# The algorithm runs in two passes per section:
-#   1. Push children first (so they are converted before their parent).
-#   2. When all children of a section have been converted and sit on the
-#      done-stack, pop them and assemble the parent ChunkNode.
-#
-# To know when a section's children are ready we track how many children
-# each section expects via a ("wait", expected_children, section, ...) frame.
-
 _FRAME_WAIT = "wait"
 _FRAME_SECTION = "section"
 _FRAME_NODE = "node"
@@ -157,7 +99,7 @@ _FRAME_NODE = "node"
 async def _build_step(
     pending: list[tuple],
     done: list[ChunkNode],
-    embedder: EmbeddingClient,
+    embedder: Embedder,
     strategy: BaseChunker,
 ) -> Any:
     if not pending:
@@ -199,8 +141,6 @@ async def _build_step(
             )
         )
 
-    # _FRAME_WAIT — all children have been pushed; the last N items in `done`
-    # are the finished child nodes (in the same left-to-right order as children).
     _, n_children, section, section_path, parent_id, doc_id, org = frame
     child_nodes, earlier = (
         done[-n_children:] if n_children else [],
@@ -248,7 +188,7 @@ _build_step_tree = async_tail_call_optimized(_build_step)
 
 async def _build_node(
     root_section: MarkdownSection,
-    embedder: EmbeddingClient,
+    embedder: Embedder,
     doc_id: str,
     organization: str | None,
     doc_slug: str,
@@ -266,18 +206,12 @@ async def chunk_markdown(
     doc_title: str = DEFAULT_UNTITLED_DOCUMENT_TITLE,
     organization: str | None = None,
     doc_id: str | None = None,
-    embedder: EmbeddingClient | None = None,
+    embedder: Embedder | None = None,
     strategy: BaseChunker | None = None,
 ) -> ChunkNode:
-    """
-    End-to-end entrypoint: parse `markdown_text`'s heading hierarchy,
-    chunk each section's content, embed every chunk, and
-    return the root ``ChunkNode`` of the resulting recursive tree.
+    from adapters.lm_studio.embedder import LMStudioEmbedder
 
-    Call ``.flatten()`` on the result to get the flat list of
-    independent Solr documents (schema §4.1) ready for indexing.
-    """
-    embedder = embedder or EmbeddingClient()
+    embedder = embedder or LMStudioEmbedder()
     doc_id = doc_id or str(uuid.uuid4())
     strategy = strategy or SemanticChunker(split_fn=segment_sentences)
     outline = replace(parse_markdown_outline(markdown_text), title=doc_title)
@@ -291,21 +225,12 @@ async def chunk_plain_text(
     doc_title: str = DEFAULT_UNTITLED_DOCUMENT_TITLE,
     organization: str | None = None,
     doc_id: str | None = None,
-    embedder: EmbeddingClient | None = None,
+    embedder: Embedder | None = None,
     strategy: BaseChunker | None = None,
 ) -> ChunkNode:
-    """
-    End-to-end entrypoint for flat, heading-free plain-text documents.
+    from adapters.lm_studio.embedder import LMStudioEmbedder
 
-    Uses the provided chunking strategy to break the text into pieces.
-    If no strategy is provided, it defaults to `SemanticChunker(split_fn=split_paragraphs)`
-    (falling back to `segment_sentences` if the text has only 1 paragraph).
-
-    Every node in the returned tree carries ``document_style="flat"`` so
-    downstream code (and Solr queries) can distinguish this path from the
-    structured Markdown path.
-    """
-    embedder = embedder or EmbeddingClient()
+    embedder = embedder or LMStudioEmbedder()
     doc_id = doc_id or str(uuid.uuid4())
     doc_slug = slugify(doc_title)
 
@@ -318,8 +243,6 @@ async def chunk_plain_text(
         )
 
     node_id = str(uuid.uuid4())
-    # Reuse _build_chunks: wrap the raw text in a minimal MarkdownSection so
-    # the shared helper can chunk, embed, and assemble the leaf ChunkNodes.
     flat_section = MarkdownSection(
         level=DOCUMENT_LEVEL,
         title=doc_title,

@@ -1,0 +1,5 @@
+This is a plain text test document for the hybrid RAG pipeline.
+
+It contains multiple paragraphs that cover different topics.
+
+The first paragraph introduces the main subject. The second paragraph provides additional context. The third paragraph concludes the document with final remarks.
