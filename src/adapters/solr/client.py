@@ -65,7 +65,7 @@ class SolrClient:
     ) -> list[dict[str, Any]]:
         params: dict[str, str] = {
             "q": query,
-            "qf": "content^4 title^2",
+            "qf": "content^2 title^1.5",
             "defType": "edismax",
             "rows": str(rows),
             "fl": fl,

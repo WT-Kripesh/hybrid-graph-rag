@@ -130,4 +130,4 @@ chunked_output.json
 chunked_output_flat.json
 chunked_output_fixed.json
 uv.lock
-tests/resources/
+
